@@ -47,17 +47,40 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ignored: true });
   }
 
+  // --- Step 1: Log invocation detection ---
+  console.log("Invocation detected", {
+    event,
+    action: payload.action,
+    comment: payload.comment.body,
+    isPR: Boolean(payload.issue.pull_request),
+  });
+
   // --- GitHub context ---
   const installationId = payload.installation.id;
   const owner = payload.repository.owner.login;
   const repo = payload.repository.name;
   const issueNumber = payload.issue.number;
 
-  // --- Auth as the app ---
-  const token = await getInstallationToken(installationId);
+  // --- Step 2: Log GitHub context ---
+  console.log("GitHub context", {
+    installationId,
+    owner,
+    repo,
+    issueNumber,
+  });
 
-  // --- Post test comment ---
-  await fetch(
+  // --- Step 3: Auth as the app with error handling ---
+  let token: string;
+  try {
+    token = await getInstallationToken(installationId);
+    console.log("Installation token acquired");
+  } catch (err) {
+    console.error("Failed to get installation token", err);
+    return NextResponse.json({ error: "auth failed" }, { status: 500 });
+  }
+
+  // --- Step 4: Post test comment with error handling ---
+  const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
     {
       method: "POST",
@@ -71,6 +94,20 @@ export async function POST(request: NextRequest) {
       }),
     }
   );
+
+  const text = await res.text();
+
+  console.log("GitHub comment response", {
+    status: res.status,
+    body: text,
+  });
+
+  if (!res.ok) {
+    return NextResponse.json(
+      { error: "comment failed", status: res.status, body: text },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json({ posted: true });
 }

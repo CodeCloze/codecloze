@@ -14,6 +14,9 @@ export function createAppJwt(): string {
     "base64"
   ).toString("utf8");
 
+  // Log the beginning of the decoded private key for debugging
+  console.log("Decoded private key start:", privateKey.substring(0, 50));
+
   const now = Math.floor(Date.now() / 1000);
 
   return jwt.sign(
