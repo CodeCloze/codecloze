@@ -78,6 +78,11 @@ export async function POST(request: NextRequest) {
     console.error("Failed to get installation token", err);
     return NextResponse.json({ error: "auth failed" }, { status: 500 });
   }
+
+  console.log({
+    installationAccount: payload.installation.account.login,
+    repoOwner: owner,
+  });
   
   // --- Step 4: Post test comment with error handling ---
   const res = await fetch(
