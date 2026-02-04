@@ -13,7 +13,8 @@ import { getInstallationToken } from "@/lib/github/installationToken";
  * 2. Parse and validate the payload
  * 3. Filter for issue_comment.created events on PRs with explicit invocation
  * 4. Authenticate as GitHub App and get installation token
- * 5. Post a confirmation comment back to the PR
+ * 5. Fetch the PR diff and calculate basic statistics
+ */
  */
 
 export const runtime = "nodejs";
@@ -177,43 +178,66 @@ export async function POST(request: NextRequest) {
       repoOwner: owner,
     });
     
-    // --- Step 4: Post confirmation comment ---
-    // Post a comment back to the PR to confirm CodeCloze received the request
-    // This uses the GitHub Issues API (PRs use the same API as issues for comments)
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    // --- Step 4: Fetch PR diff ---
+    // Fetch the raw unified diff for the pull request
+    // Using the diff format is simpler and more reliable than parsing individual files
+    // The Accept header requests the diff format directly from GitHub
+    const diffRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${issueNumber}`,
       {
-        method: "POST",
         headers: {
           Authorization: `Bearer ${token}`, // Use the installation token for authentication
-          Accept: "application/vnd.github+json", // Request GitHub API v3+ JSON format
+          Accept: "application/vnd.github.v3.diff", // Request unified diff format (plain text)
           "User-Agent": "CodeCloze", // Identify our app in API requests
         },
-        body: JSON.stringify({
-          body: "👋 CodeCloze is connected and ready. Review logic coming next.",
-        }),
       }
     );
 
-    // Read the response body for logging and error handling
-    const text = await res.text();
-
-    console.log("GitHub comment response", {
-      status: res.status,
-      body: text,
-    });
-
-    // If the comment post failed, return an error response
-    // This could happen if the app lacks write permissions or the PR was closed/deleted
-    if (!res.ok) {
+    // Check if the diff fetch was successful
+    if (!diffRes.ok) {
+      const text = await diffRes.text();
+      console.error("Failed to fetch diff", diffRes.status, text);
       return NextResponse.json(
-        { error: "comment failed", status: res.status, body: text },
+        { error: "diff fetch failed", status: diffRes.status, details: text },
         { status: 500 }
       );
     }
 
-    // Success! Return a success response
-    return NextResponse.json({ posted: true });
+    // Read the diff as plain text (not JSON)
+    // This is the entire PR diff in unified diff format
+    const diffText = await diffRes.text();
+
+    // --- Step 5: Calculate basic diff statistics ---
+    // These metrics are intentionally simple and sufficient for gating logic later
+    // We use regex matching on the diff format:
+    // - "diff --git" marks the start of each file's diff
+    // - "@@" marks the start of each hunk within a file
+    const diffBytes = Buffer.byteLength(diffText, "utf8");
+    const fileCount = (diffText.match(/^diff --git /gm) || []).length;
+    const hunkCount = (diffText.match(/^@@/gm) || []).length;
+
+    // Log the statistics for monitoring and debugging
+    console.log("PR diff stats", {
+      diffBytes,
+      fileCount,
+      hunkCount,
+    });
+
+    // Log a preview of the first 20 lines of the diff
+    // This helps confirm the format is correct (temporary, can be removed later)
+    console.log(
+      "Diff preview:",
+      diffText.split("\n").slice(0, 20).join("\n")
+    );
+
+    // Return early with the diff statistics
+    // No comment is posted yet - this is just to verify the diff fetching works
+    return NextResponse.json({
+      diffFetched: true,
+      diffBytes,
+      fileCount,
+      hunkCount,
+    });
   } catch (err) {
     // --- Global error handler ---
     // Catch any unhandled errors that weren't caught by specific try-catch blocks
