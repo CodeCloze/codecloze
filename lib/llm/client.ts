@@ -103,7 +103,29 @@ export async function callLLM(
       throw new Error("No completion text returned from LLM");
     }
 
-  return choice.message.content.trim();
+    return choice.message.content.trim();
+  } catch (err: any) {
+    // Enhanced error logging for Azure OpenAI issues
+    if (err?.code === "DeploymentNotFound" || err?.status === 404) {
+      const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+      let cleanEndpoint = endpoint?.trim() || "";
+      if (cleanEndpoint && !cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
+        cleanEndpoint = `https://${cleanEndpoint}`;
+      }
+      cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
+      
+      console.error("Azure OpenAI deployment not found", {
+        deploymentName,
+        endpoint: cleanEndpoint,
+        fullURL: `${cleanEndpoint}/openai/deployments/${deploymentName}/chat/completions`,
+        error: err.message,
+      });
+      throw new Error(
+        `Azure OpenAI deployment "${deploymentName}" not found. Check that the deployment exists and AZURE_OPENAI_ENDPOINT is correct.`
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -200,28 +222,6 @@ export async function callResponsesAPI(
       responsesURL,
       error: err.message,
     });
-    throw err;
-  }
-} catch (err: any) {
-    // Enhanced error logging for Azure OpenAI issues
-    if (err?.code === "DeploymentNotFound" || err?.status === 404) {
-      const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-      let cleanEndpoint = endpoint?.trim() || "";
-      if (cleanEndpoint && !cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
-        cleanEndpoint = `https://${cleanEndpoint}`;
-      }
-      cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
-      
-      console.error("Azure OpenAI deployment not found", {
-        deploymentName,
-        endpoint: cleanEndpoint,
-        fullURL: `${cleanEndpoint}/openai/deployments/${deploymentName}/chat/completions`,
-        error: err.message,
-      });
-      throw new Error(
-        `Azure OpenAI deployment "${deploymentName}" not found. Check that the deployment exists and AZURE_OPENAI_ENDPOINT is correct.`
-      );
-    }
     throw err;
   }
 }
