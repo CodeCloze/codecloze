@@ -40,10 +40,24 @@ export async function callLLM(
   // Use REST API directly: https://{resource}.openai.azure.com/openai/v1/responses
   const responsesURL = `${cleanEndpoint}/openai/v1/responses`;
 
-  console.log("Calling Azure OpenAI Responses API (REST)", {
+  const requestBody = {
+    model: deploymentName, // Deployment name
+    input: prompt, // Use input parameter for Responses API
+    max_output_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
+  };
+
+  console.log("=== Azure OpenAI Responses API Request ===", {
     deploymentName,
     url: responsesURL,
+    endpoint: cleanEndpoint,
     hasApiKey: !!apiKey,
+    apiKeyLength: apiKey?.length || 0,
+    requestBody: {
+      ...requestBody,
+      input: requestBody.input.substring(0, 200) + (requestBody.input.length > 200 ? "..." : ""), // Log first 200 chars of input
+      inputLength: requestBody.input.length,
+    },
+    maxTokens,
   });
 
   try {
@@ -53,47 +67,112 @@ export async function callLLM(
         "Content-Type": "application/json",
         "api-key": apiKey, // Use api-key header for Azure OpenAI
       },
-      body: JSON.stringify({
-        model: deploymentName, // Deployment name
-        input: prompt, // Use input parameter for Responses API
-        max_output_tokens: maxTokens // Use max_completion_tokens for Azure AI Foundry models
-      }),
+      body: JSON.stringify(requestBody),
     });
 
+    console.log("=== Azure OpenAI API Response Status ===", {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok,
+      headers: Object.fromEntries(response.headers.entries()),
+    });
+
+    const responseText = await response.text();
+    
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Azure OpenAI API error", {
+      console.error("=== Azure OpenAI API Error Response ===", {
         status: response.status,
         statusText: response.statusText,
-        error: errorText,
+        responseText,
+        deploymentName,
+        endpoint: cleanEndpoint,
+        fullURL: responsesURL,
       });
-      throw new Error(`Azure OpenAI API error: ${response.status} ${errorText}`);
+      throw new Error(`Azure OpenAI API error: ${response.status} ${responseText}`);
     }
 
-    const data = await response.json();
+    let data: any;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseErr) {
+      console.error("=== Failed to parse JSON response ===", {
+        responseText,
+        parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+      });
+      throw new Error(`Failed to parse JSON response: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+    }
+
+    console.log("=== Azure OpenAI API Success Response ===", {
+      id: data.id,
+      model: data.model,
+      status: data.status,
+      error: data.error,
+      incomplete_details: data.incomplete_details,
+      output_text: data.output_text?.substring(0, 200) + (data.output_text?.length > 200 ? "..." : ""), // Log first 200 chars
+      output_text_length: data.output_text?.length,
+      output_array_length: data.output?.length,
+      usage: data.usage,
+      temperature: data.temperature,
+      max_output_tokens: data.max_output_tokens,
+      hasOutput: !!data.output,
+      outputStructure: data.output ? {
+        length: data.output.length,
+        firstItemType: data.output[0]?.type,
+        firstItemRole: data.output[0]?.role,
+        firstItemContentLength: data.output[0]?.content?.length,
+      } : null,
+    });
 
     // Extract the completion text from responses API format
     // According to docs, the response has an `output_text` field
     if (data.output_text) {
+      console.log("=== Extracted output_text ===", {
+        length: data.output_text.length,
+        preview: data.output_text.substring(0, 100),
+      });
       return data.output_text.trim();
     }
 
     // Fallback: check output array structure
     if (data.output && Array.isArray(data.output) && data.output.length > 0) {
+      console.log("=== Attempting to extract from output array ===", {
+        outputLength: data.output.length,
+        firstOutput: JSON.stringify(data.output[0], null, 2).substring(0, 500),
+      });
+      
       const firstOutput = data.output[0];
       if (firstOutput.content && Array.isArray(firstOutput.content)) {
         const textContent = firstOutput.content.find((c: any) => c.type === "output_text");
         if (textContent && textContent.text) {
+          console.log("=== Extracted text from output array ===", {
+            length: textContent.text.length,
+            preview: textContent.text.substring(0, 100),
+          });
           return textContent.text.trim();
         }
       }
     }
 
+    console.error("=== No completion text found in response ===", {
+      responseKeys: Object.keys(data),
+      fullResponse: JSON.stringify(data, null, 2).substring(0, 2000), // Log first 2000 chars of full response
+    });
     throw new Error("No completion text returned from Responses API");
   } catch (err: any) {
+    console.error("=== Azure OpenAI API Exception ===", {
+      errorType: err?.constructor?.name,
+      errorMessage: err?.message,
+      errorStack: err?.stack,
+      status: err?.status,
+      code: err?.code,
+      deploymentName,
+      endpoint: cleanEndpoint,
+      fullURL: responsesURL,
+    });
+
     // Enhanced error logging for Azure OpenAI issues
     if (err?.status === 404 || err.message?.includes("404")) {
-      console.error("Azure OpenAI deployment not found", {
+      console.error("=== 404 Error Details ===", {
         deploymentName,
         endpoint: cleanEndpoint,
         fullURL: responsesURL,
