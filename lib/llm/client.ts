@@ -1,16 +1,16 @@
-import { OpenAIClient, AzureKeyCredential } from "@azure/openai";
+import OpenAI from "openai";
 
 /**
  * Azure AI Foundry / OpenAI Client Configuration
  * 
  * Uses environment variables for configuration:
- * - AZURE_OPENAI_ENDPOINT: The Azure OpenAI endpoint URL
+ * - AZURE_OPENAI_ENDPOINT: The Azure OpenAI endpoint URL (e.g., https://your-resource.openai.azure.com)
  * - AZURE_OPENAI_API_KEY: The API key for authentication
  */
 
-let client: OpenAIClient | null = null;
+let client: OpenAI | null = null;
 
-function getClient(): OpenAIClient {
+function getClient(): OpenAI {
   if (client) {
     return client;
   }
@@ -22,10 +22,16 @@ function getClient(): OpenAIClient {
     throw new Error("Azure OpenAI credentials not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY");
   }
 
-  client = new OpenAIClient(
-    endpoint,
-    new AzureKeyCredential(apiKey)
-  );
+  // Configure OpenAI client for Azure OpenAI
+  // Azure OpenAI uses a different base URL structure
+  client = new OpenAI({
+    apiKey: apiKey,
+    baseURL: `${endpoint}/openai/deployments`,
+    defaultQuery: { "api-version": "2024-02-15-preview" },
+    defaultHeaders: {
+      "api-key": apiKey,
+    },
+  });
 
   return client;
 }
@@ -48,20 +54,19 @@ export async function callLLM(
   const openaiClient = getClient();
 
   // Use chat completions API (standard for Azure OpenAI)
-  const response = await openaiClient.getChatCompletions(
-    deploymentName,
-    [
+  // For Azure OpenAI, use the deployment name as the model parameter
+  const response = await openaiClient.chat.completions.create({
+    model: deploymentName, // Azure OpenAI uses deployment name as model
+    messages: [
       {
         role: "user",
         content: prompt,
       },
     ],
-    {
-      temperature: 0, // Deterministic
-      maxTokens,
-      // No streaming, no retries - single deterministic call
-    }
-  );
+    temperature: 0, // Deterministic
+    max_tokens: maxTokens,
+    // No streaming, no retries - single deterministic call
+  });
 
   // Extract the completion text from chat response
   const choice = response.choices[0];
