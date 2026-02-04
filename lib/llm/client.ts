@@ -8,13 +8,13 @@ import OpenAI from "openai";
  * - AZURE_OPENAI_API_KEY: The API key for authentication
  */
 
-// Cache clients per deployment name since each deployment needs its own baseURL
-const clientCache: Map<string, OpenAI> = new Map();
+// Cache the OpenAI client (shared across all deployments)
+let cachedClient: OpenAI | null = null;
 
-function getClient(deploymentName: string): OpenAI {
+function getClient(): OpenAI {
   // Return cached client if available
-  if (clientCache.has(deploymentName)) {
-    return clientCache.get(deploymentName)!;
+  if (cachedClient) {
+    return cachedClient;
   }
 
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -31,20 +31,15 @@ function getClient(deploymentName: string): OpenAI {
   }
   cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
 
-  // Configure OpenAI client for Azure OpenAI
-  // Azure OpenAI requires the deployment name in the base URL path
-  // Format: https://{endpoint}/openai/deployments/{deployment-name}
+  // Configure OpenAI client for Azure OpenAI Responses API
+  // Format: https://{resource}.openai.azure.com/openai/v1/
   const client = new OpenAI({
     apiKey: apiKey,
-    baseURL: `${cleanEndpoint}/openai/deployments/${deploymentName}`,
-    defaultQuery: { "api-version": "2024-02-15-preview" },
-    defaultHeaders: {
-      "api-key": apiKey,
-    },
+    baseURL: `${cleanEndpoint}/openai/v1/`,
   });
 
-  // Cache the client for this deployment
-  clientCache.set(deploymentName, client);
+  // Cache the client
+  cachedClient = client;
 
   return client;
 }
@@ -64,7 +59,7 @@ export async function callLLM(
   prompt: string,
   maxTokens: number = 300
 ): Promise<string> {
-  const openaiClient = getClient(deploymentName);
+  const openaiClient = getClient();
 
   // Log the configuration for debugging (without exposing the API key)
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -74,36 +69,38 @@ export async function callLLM(
   }
   cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
   
-  console.log("Calling Azure OpenAI", {
+  console.log("Calling Azure OpenAI Responses API", {
     deploymentName,
-    baseURL: `${cleanEndpoint}/openai/deployments/${deploymentName}`,
+    baseURL: `${cleanEndpoint}/openai/v1/`,
     hasApiKey: !!process.env.AZURE_OPENAI_API_KEY,
   });
 
   try {
-    // Use chat completions API (standard for Azure OpenAI)
-    // For Azure OpenAI, the model parameter can be the deployment name or any string
-    // The actual deployment is determined by the baseURL path
-    const response = await openaiClient.chat.completions.create({
-      model: deploymentName, // Can be deployment name or any string for Azure
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      temperature: 0, // Deterministic
+    // Use Responses API
+    const response = await openaiClient.responses.create({
+      model: deploymentName, // Deployment name
+      input: prompt, // Use input parameter for Responses API
       max_completion_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
-      // No streaming, no retries - single deterministic call
+      temperature: 0, // Deterministic
     });
 
-    // Extract the completion text from chat response
-    const choice = response.choices[0];
-    if (!choice || !choice.message || !choice.message.content) {
-      throw new Error("No completion text returned from LLM");
+    // Extract the completion text from responses API format
+    // The response structure may vary, check common fields
+    if (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) {
+      return response.choices[0].message.content.trim();
+    }
+    
+    if (response.content) {
+      return response.content.trim();
     }
 
-    return choice.message.content.trim();
+    // Try to get text from response object directly
+    const responseText = (response as any).text || (response as any).output;
+    if (responseText) {
+      return String(responseText).trim();
+    }
+
+    throw new Error("No completion text returned from Responses API");
   } catch (err: any) {
     // Enhanced error logging for Azure OpenAI issues
     if (err?.code === "DeploymentNotFound" || err?.status === 404) {
@@ -117,7 +114,7 @@ export async function callLLM(
       console.error("Azure OpenAI deployment not found", {
         deploymentName,
         endpoint: cleanEndpoint,
-        fullURL: `${cleanEndpoint}/openai/deployments/${deploymentName}/chat/completions`,
+        fullURL: `${cleanEndpoint}/openai/v1/responses`,
         error: err.message,
       });
       throw new Error(
@@ -131,10 +128,10 @@ export async function callLLM(
 /**
  * Call Azure AI Foundry Responses API
  * 
- * Uses the Responses API endpoint (different from standard chat completions)
+ * Uses the Responses API endpoint (same as callLLM, but kept for backward compatibility)
  * 
  * @param deploymentName - The deployment name
- * @param prompt - The prompt to send
+ * @param prompt - The prompt/input to send
  * @param maxTokens - Maximum tokens to generate (default: 800)
  * @returns The completion text
  */
@@ -143,89 +140,6 @@ export async function callResponsesAPI(
   prompt: string,
   maxTokens: number = 800
 ): Promise<string> {
-  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  const apiKey = process.env.AZURE_OPENAI_API_KEY;
-
-  if (!endpoint || !apiKey) {
-    throw new Error("Azure OpenAI credentials not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY");
-  }
-
-  // Normalize endpoint: add https:// if missing, remove trailing slash
-  let cleanEndpoint = endpoint.trim();
-  if (!cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
-    cleanEndpoint = `https://${cleanEndpoint}`;
-  }
-  cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
-
-  // Azure AI Foundry Responses API uses a different endpoint structure
-  // Based on the curl example: https://{resource}.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview
-  // Convert endpoint format if needed (e.g., .openai.azure.com -> .cognitiveservices.azure.com)
-  let responsesURL: string;
-  if (cleanEndpoint.includes(".openai.azure.com")) {
-    // Convert .openai.azure.com to .cognitiveservices.azure.com for Responses API
-    responsesURL = cleanEndpoint.replace(".openai.azure.com", ".cognitiveservices.azure.com") + "/openai/responses?api-version=2025-04-01-preview";
-  } else if (cleanEndpoint.includes(".cognitiveservices.azure.com")) {
-    // Already in correct format
-    responsesURL = `${cleanEndpoint}/openai/responses?api-version=2025-04-01-preview`;
-  } else if (cleanEndpoint.includes(".services.ai.azure.com")) {
-    // AI Foundry format
-    responsesURL = `${cleanEndpoint}/openai/responses?api-version=2025-04-01-preview`;
-  } else {
-    // Default: assume cognitiveservices format
-    responsesURL = `${cleanEndpoint}/openai/responses?api-version=2025-04-01-preview`;
-  }
-
-  console.log("Calling Azure AI Foundry Responses API", {
-    deploymentName,
-    responsesURL,
-    hasApiKey: !!apiKey,
-  });
-
-  try {
-    const response = await fetch(responsesURL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`, // Use Bearer token for Responses API
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: deploymentName, // Model name in body for Responses API
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature: 0,
-        max_completion_tokens: maxTokens, // Use max_completion_tokens for Responses API
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Responses API error: ${response.status} ${errorText}`);
-    }
-
-    const data = await response.json();
-    
-    // Extract the completion text from responses API format
-    // The exact structure may vary, but typically it's in choices[0].message.content
-    if (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
-      return data.choices[0].message.content.trim();
-    }
-    
-    // Alternative structure check
-    if (data.content) {
-      return data.content.trim();
-    }
-
-    throw new Error("No completion text returned from Responses API");
-  } catch (err: any) {
-    console.error("Responses API error", {
-      deploymentName,
-      responsesURL,
-      error: err.message,
-    });
-    throw err;
-  }
+  // Use the same implementation as callLLM since both use Responses API now
+  return callLLM(deploymentName, prompt, maxTokens);
 }
