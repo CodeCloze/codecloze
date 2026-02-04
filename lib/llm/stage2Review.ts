@@ -1,4 +1,4 @@
-import { callResponsesAPI, TextFormatRequest } from "./client";
+import { callResponsesAPI, TextFormatJsonSchema } from "./client";
 
 /**
  * Stage 2: Main Review Model
@@ -7,7 +7,7 @@ import { callResponsesAPI, TextFormatRequest } from "./client";
  * Uses a mid-tier code reasoning model.
  */
 
-const REVIEW_PROMPT = `You are a senior engineer reviewing a pull request diff.
+const REVIEW_SYSTEM_MESSAGE = `You are a senior engineer reviewing a pull request diff.
 
 Identify realistic bug risks only.
 Each finding must:
@@ -37,19 +37,13 @@ Otherwise, return JSON matching this schema:
       "confidence": 0.0-1.0
     }
   ]
-}
+}`;
 
-Diff:
----
-{DIFF}
----`;
-
-const REVIEW_RESPONSE_FORMAT: TextFormatRequest = {
+const REVIEW_RESPONSE_FORMAT: TextFormatJsonSchema = {
   type: "json_schema",
   name: "review_findings",
-  description: "Structured findings describing realistic bug risks from the diff",
-  instructions: "Return exactly one JSON object matching this schema without extra commentary.",
-  json_schema: {
+  strict: true,
+  schema: {
     type: "object",
     properties: {
       findings: {
@@ -78,10 +72,12 @@ const REVIEW_RESPONSE_FORMAT: TextFormatRequest = {
             },
           },
           required: ["summary", "lines", "failure_mode", "confidence"],
+          additionalProperties: false,
         },
       },
     },
     required: ["findings"],
+    additionalProperties: false,
   },
 };
 
@@ -103,26 +99,24 @@ export interface ReviewResponse {
  * @returns Review response with findings
  */
 export async function runReviewModel(diffText: string): Promise<ReviewResponse> {
-  // Get deployment name from environment (e.g., "gpt-5.1-codex-mini" or equivalent)
   const deploymentName = process.env.AZURE_OPENAI_REVIEW_DEPLOYMENT;
   if (!deploymentName) {
     throw new Error("AZURE_OPENAI_REVIEW_DEPLOYMENT not set");
   }
 
-  // Replace {DIFF} placeholder in prompt
-  const prompt = REVIEW_PROMPT.replace("{DIFF}", diffText);
+  const messages = [
+    { role: "system", content: REVIEW_SYSTEM_MESSAGE },
+    {
+      role: "user",
+      content: `Diff:\n---\n${diffText}\n---`,
+    },
+  ];
 
   try {
-    // Call Responses API with token limit for review
-    // Note: Reasoning models use reasoning tokens that count against max_completion_tokens
-    // We need higher limits to account for reasoning + completion tokens
-    // Using 2000 tokens to ensure we get completion text even with reasoning
-    const response = await callResponsesAPI(deploymentName, prompt, 4000, REVIEW_RESPONSE_FORMAT);
+    const response = await callResponsesAPI(deploymentName, messages, 4000, REVIEW_RESPONSE_FORMAT);
 
-    // Parse JSON response
     let parsed: ReviewResponse;
     try {
-      // Try to extract JSON from response
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error("No JSON found in response");
@@ -133,17 +127,14 @@ export async function runReviewModel(diffText: string): Promise<ReviewResponse> 
         response,
         error: parseErr instanceof Error ? parseErr.message : String(parseErr),
       });
-      // Return empty findings on parse failure
       return { findings: [] };
     }
 
-    // Validate response structure
     if (!parsed.findings || !Array.isArray(parsed.findings)) {
       console.error("Invalid review response structure", parsed);
       return { findings: [] };
     }
 
-    // Validate and filter findings
     const validFindings: Finding[] = [];
     for (const finding of parsed.findings) {
       if (
@@ -166,7 +157,6 @@ export async function runReviewModel(diffText: string): Promise<ReviewResponse> 
     return { findings: validFindings };
   } catch (err) {
     console.error("Review model error", err);
-    // Return empty findings on error
     return { findings: [] };
   }
 }
