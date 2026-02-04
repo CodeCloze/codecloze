@@ -1,4 +1,4 @@
-import { callResponsesAPI } from "./client";
+import { callResponsesAPI, ResponseFormatRequest } from "./client";
 
 /**
  * Stage 2: Main Review Model
@@ -22,6 +22,8 @@ Do NOT comment on:
 - naming
 - best practices unless tied directly to a concrete failure
 
+Use the structured schema enforced by the Responses API to reply. Do not add extra text beyond the schema.
+
 If no meaningful bug risk exists, return:
 {"findings": []}
 
@@ -41,6 +43,49 @@ Diff:
 ---
 {DIFF}
 ---`;
+
+const REVIEW_RESPONSE_FORMAT: ResponseFormatRequest = {
+  type: "json_schema",
+  json_schema: {
+    name: "review_findings",
+    description: "Structured findings describing realistic bug risks from the diff",
+    schema: {
+      type: "object",
+      properties: {
+        findings: {
+          type: "array",
+          description: "List of plausible bug risks grounded in the diff",
+          items: {
+            type: "object",
+            properties: {
+              summary: {
+                type: "string",
+                description: "Short description of the issue",
+              },
+              lines: {
+                type: "string",
+                description: "Diff context or hunk associated with the risk",
+              },
+              failure_mode: {
+                type: "string",
+                description: "How the issue could fail at runtime",
+              },
+              confidence: {
+                type: "number",
+                description: "Confidence between 0 and 1",
+                minimum: 0,
+                maximum: 1,
+              },
+            },
+            required: ["summary", "lines", "failure_mode", "confidence"],
+          },
+        },
+      },
+      required: ["findings"],
+    },
+    instructions: "Return exactly one JSON object matching this schema without extra commentary.",
+  },
+};
 
 export interface Finding {
   summary: string;
@@ -74,7 +119,7 @@ export async function runReviewModel(diffText: string): Promise<ReviewResponse> 
     // Note: Reasoning models use reasoning tokens that count against max_completion_tokens
     // We need higher limits to account for reasoning + completion tokens
     // Using 2000 tokens to ensure we get completion text even with reasoning
-    const response = await callResponsesAPI(deploymentName, prompt, 4000);
+    const response = await callResponsesAPI(deploymentName, prompt, 4000, REVIEW_RESPONSE_FORMAT);
 
     // Parse JSON response
     let parsed: ReviewResponse;

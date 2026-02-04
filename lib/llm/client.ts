@@ -8,6 +8,28 @@
  * - AZURE_OPENAI_API_KEY: The API key for authentication
  */
 
+export type JsonSchemaPrimitiveType = "string" | "number" | "boolean" | "object" | "array";
+
+export interface JsonSchemaDefinition {
+  type: JsonSchemaPrimitiveType;
+  description?: string;
+  properties?: Record<string, JsonSchemaDefinition>;
+  required?: string[];
+  items?: JsonSchemaDefinition;
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface ResponseFormatRequest {
+  type: "json_schema";
+  json_schema: {
+    name: string;
+    description?: string;
+    schema: JsonSchemaDefinition;
+    instructions?: string;
+  };
+}
+
 /**
  * Call Azure OpenAI with deterministic settings
  * 
@@ -16,12 +38,14 @@
  * @param deploymentName - The deployment name (from environment or parameter)
  * @param prompt - The prompt to send
  * @param maxTokens - Maximum tokens to generate (default: 300)
+ * @param responseFormat - Optional structured output specification
  * @returns The completion text
  */
 export async function callLLM(
   deploymentName: string,
   prompt: string,
-  maxTokens: number = 300
+  maxTokens: number = 300,
+  responseFormat?: ResponseFormatRequest
 ): Promise<string> {
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
@@ -40,14 +64,23 @@ export async function callLLM(
   // Use REST API directly: https://{resource}.openai.azure.com/openai/v1/responses
   const responsesURL = `${cleanEndpoint}/openai/v1/responses`;
 
-  const requestBody = {
+  const requestBody: {
+    model: string;
+    input: string;
+    max_output_tokens: number;
+    reasoning: { effort: "low" | "medium" | "high" };
+    response_format?: ResponseFormatRequest;
+  } = {
     model: deploymentName, // Deployment name
     input: prompt, // Use input parameter for Responses API
     max_output_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
-    reasoning: {"effort": "low"} // Use low reasoning effort to align with multiple models reasoning effort enums
+    reasoning: { effort: "low" } // Use low reasoning effort to align with multiple models reasoning effort enums
   };
+  if (responseFormat) {
+    requestBody.response_format = responseFormat;
+  }
 
-  console.log("=== Azure OpenAI Responses API Request ===", {
+    console.log("=== Azure OpenAI Responses API Request ===", {
     deploymentName,
     url: responsesURL,
     endpoint: cleanEndpoint,
@@ -242,13 +275,15 @@ export async function callLLM(
  * @param deploymentName - The deployment name
  * @param prompt - The prompt/input to send
  * @param maxTokens - Maximum tokens to generate (default: 800)
+ * @param responseFormat - Optional structured output specification
  * @returns The completion text
  */
 export async function callResponsesAPI(
   deploymentName: string,
   prompt: string,
-  maxTokens: number = 800
+  maxTokens: number = 800,
+  responseFormat?: ResponseFormatRequest
 ): Promise<string> {
   // Use the same implementation as callLLM since both use Responses API now
-  return callLLM(deploymentName, prompt, maxTokens);
+  return callLLM(deploymentName, prompt, maxTokens, responseFormat);
 }
