@@ -70,8 +70,11 @@ export async function runReviewModel(diffText: string): Promise<ReviewResponse> 
   const prompt = REVIEW_PROMPT.replace("{DIFF}", diffText);
 
   try {
-    // Call Responses API with moderate token limit for review (≤800 tokens)
-    const response = await callResponsesAPI(deploymentName, prompt, 800);
+    // Call Responses API with token limit for review
+    // Note: Reasoning models use reasoning tokens that count against max_completion_tokens
+    // We need higher limits to account for reasoning + completion tokens
+    // Using 2000 tokens to ensure we get completion text even with reasoning
+    const response = await callResponsesAPI(deploymentName, prompt, 2000);
 
     // Parse JSON response
     let parsed: ReviewResponse;

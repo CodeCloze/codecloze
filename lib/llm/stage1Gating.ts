@@ -56,8 +56,11 @@ export async function runGatingModel(diffText: string): Promise<boolean> {
   const prompt = GATING_PROMPT.replace("{DIFF}", diffText);
 
   try {
-    // Call LLM with low token limit for gating (≤300 tokens)
-    const response = await callLLM(deploymentName, prompt, 300);
+    // Call LLM with token limit for gating
+    // Note: Reasoning models use reasoning tokens that count against max_completion_tokens
+    // We need higher limits to account for reasoning + completion tokens
+    // Using 1000 tokens to ensure we get completion text even with reasoning
+    const response = await callLLM(deploymentName, prompt, 1000);
 
     // Parse JSON response strictly
     let parsed: GatingResponse;
