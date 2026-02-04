@@ -93,7 +93,7 @@ export async function callLLM(
         },
       ],
       temperature: 0, // Deterministic
-      max_tokens: maxTokens,
+      max_completion_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
       // No streaming, no retries - single deterministic call
     });
 
@@ -158,18 +158,21 @@ export async function callResponsesAPI(
   cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
 
   // Azure AI Foundry Responses API uses a different endpoint structure
-  // Format: https://{endpoint}/openai/deployments/{deployment-name}/responses
-  // Or: https://{endpoint}/models/{deployment-name}/responses
-  // Check if endpoint is AI Foundry format (.services.ai.azure.com) or standard OpenAI format
-  const isAIFoundry = cleanEndpoint.includes(".services.ai.azure.com");
-  
+  // Based on the curl example: https://{resource}.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview
+  // Convert endpoint format if needed (e.g., .openai.azure.com -> .cognitiveservices.azure.com)
   let responsesURL: string;
-  if (isAIFoundry) {
-    // AI Foundry format: https://{resource}.services.ai.azure.com/models/{deployment}/responses
-    responsesURL = `${cleanEndpoint}/models/${deploymentName}/responses`;
+  if (cleanEndpoint.includes(".openai.azure.com")) {
+    // Convert .openai.azure.com to .cognitiveservices.azure.com for Responses API
+    responsesURL = cleanEndpoint.replace(".openai.azure.com", ".cognitiveservices.azure.com") + "/openai/responses?api-version=2025-04-01-preview";
+  } else if (cleanEndpoint.includes(".cognitiveservices.azure.com")) {
+    // Already in correct format
+    responsesURL = `${cleanEndpoint}/openai/responses?api-version=2025-04-01-preview`;
+  } else if (cleanEndpoint.includes(".services.ai.azure.com")) {
+    // AI Foundry format
+    responsesURL = `${cleanEndpoint}/openai/responses?api-version=2025-04-01-preview`;
   } else {
-    // Standard Azure OpenAI format: https://{resource}.openai.azure.com/openai/deployments/{deployment}/responses
-    responsesURL = `${cleanEndpoint}/openai/deployments/${deploymentName}/responses`;
+    // Default: assume cognitiveservices format
+    responsesURL = `${cleanEndpoint}/openai/responses?api-version=2025-04-01-preview`;
   }
 
   console.log("Calling Azure AI Foundry Responses API", {
@@ -182,10 +185,11 @@ export async function callResponsesAPI(
     const response = await fetch(responsesURL, {
       method: "POST",
       headers: {
-        "api-key": apiKey,
+        "Authorization": `Bearer ${apiKey}`, // Use Bearer token for Responses API
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        model: deploymentName, // Model name in body for Responses API
         messages: [
           {
             role: "user",
@@ -193,7 +197,7 @@ export async function callResponsesAPI(
           },
         ],
         temperature: 0,
-        max_tokens: maxTokens,
+        max_completion_tokens: maxTokens, // Use max_completion_tokens for Responses API
       }),
     });
 
