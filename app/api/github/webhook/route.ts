@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
     token = await getInstallationToken(installationId);
     console.log("Installation token acquired");
     console.log({
-      installationAccount: payload.installation.account.login,
+      installationAccount: payload.installation?.account?.login,
       repoOwner: owner,
     });
   } catch (err) {
