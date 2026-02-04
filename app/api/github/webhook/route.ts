@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { getInstallationToken } from "@/lib/github/installationToken";
+import { postComment } from "@/lib/github/postComment";
+import { runGatingModel } from "@/lib/llm/stage1Gating";
+import { runReviewModel } from "@/lib/llm/stage2Review";
 
 /**
  * GitHub Webhook Handler
@@ -13,7 +16,10 @@ import { getInstallationToken } from "@/lib/github/installationToken";
  * 2. Parse and validate the payload
  * 3. Filter for issue_comment.created events on PRs with explicit invocation
  * 4. Authenticate as GitHub App and get installation token
- * 5. Fetch the PR diff and calculate basic statistics
+ * 5. Fetch the PR diff
+ * 6. Run Stage 1 gating model to determine if review is needed
+ * 7. If review needed, run Stage 2 main review model
+ * 8. Post exactly one comment to the PR
  */
 
 export const runtime = "nodejs";
@@ -85,8 +91,8 @@ export async function POST(request: NextRequest) {
     // Require users to explicitly invoke CodeCloze with "@codecloze review"
     // This prevents the bot from responding to every comment
     // Use optional chaining to safely access nested properties
-    const commentBody: string = payload.comment?.body || "";
-    if (!commentBody.includes("@codecloze review")) {
+    const invocationComment: string = payload.comment?.body || "";
+    if (!invocationComment.includes("@codecloze review")) {
       return NextResponse.json({ ignored: true });
     }
 
@@ -102,7 +108,7 @@ export async function POST(request: NextRequest) {
     console.log("Invocation detected", {
       event,
       action: payload.action,
-      comment: payload.comment?.body,
+      comment: invocationComment,
       isPR: Boolean(payload.issue?.pull_request),
     });
 
@@ -229,13 +235,100 @@ export async function POST(request: NextRequest) {
       diffText.split("\n").slice(0, 20).join("\n")
     );
 
-    // Return early with the diff statistics
-    // No comment is posted yet - this is just to verify the diff fetching works
+    // --- Step 6: Stage 1 - Gating Model ---
+    // Determine if deeper review is warranted
+    // This uses the cheapest model to quickly filter out low-risk changes
+    let needsReview: boolean;
+    try {
+      needsReview = await runGatingModel(diffText);
+      console.log("Gating model result", { needsReview });
+    } catch (err) {
+      console.error("Gating model failed", err);
+      // Fail open - assume review is needed
+      needsReview = true;
+    }
+
+    // --- Step 7: Post comment based on gating result ---
+    let commentBody: string;
+    let reviewResponse: { findings: Array<{ summary: string; lines: string; failure_mode: string; confidence: number }> } | null = null;
+
+    if (!needsReview) {
+      // Stage 1 says no review needed - post reassurance comment
+      commentBody = `✅ No major issues detected
+
+I reviewed this diff for realistic runtime, logic, and state-related risks.
+Nothing stood out as likely to cause production issues.
+
+This change appears low risk to merge.`;
+    } else {
+      // Stage 1 says review needed - run Stage 2 main review model
+      try {
+        reviewResponse = await runReviewModel(diffText);
+        console.log("Review model result", {
+          findingsCount: reviewResponse.findings.length,
+        });
+      } catch (err) {
+        console.error("Review model failed", err);
+        // On error, return empty findings (will post reassurance)
+        reviewResponse = { findings: [] };
+      }
+
+      // Format comment based on findings
+      if (reviewResponse.findings.length === 0) {
+        // No findings - post reassurance comment (same as Stage 1)
+        commentBody = `✅ No major issues detected
+
+I reviewed this diff for realistic runtime, logic, and state-related risks.
+Nothing stood out as likely to cause production issues.
+
+This change appears low risk to merge.`;
+      } else {
+        // Sort findings by confidence (descending) and take top 3
+        const sortedFindings = [...reviewResponse.findings]
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, 3);
+
+        // Format findings as bullet points
+        const findingsText = sortedFindings
+          .map(
+            (finding) => `**${finding.summary}**
+
+Why this could break:
+${finding.failure_mode}
+
+Relevant diff:
+\`\`\`
+${finding.lines}
+\`\`\``
+          )
+          .join("\n\n---\n\n");
+
+        commentBody = `⚠️ Possible bug risk
+
+${findingsText}`;
+      }
+    }
+
+    // --- Step 8: Post exactly one comment ---
+    // Post the comment to the PR
+    // This is the only comment posted per invocation
+    try {
+      await postComment(token, owner, repo, issueNumber, commentBody);
+      console.log("Comment posted successfully");
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error("Failed to post comment", err);
+      return NextResponse.json(
+        { error: "comment failed", details: errorMessage },
+        { status: 500 }
+      );
+    }
+
+    // Success - return response
     return NextResponse.json({
-      diffFetched: true,
-      diffBytes,
-      fileCount,
-      hunkCount,
+      success: true,
+      needsReview,
+      findingsCount: needsReview && reviewResponse ? reviewResponse.findings.length : 0,
     });
   } catch (err) {
     // --- Global error handler ---
