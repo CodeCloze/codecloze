@@ -5,31 +5,46 @@ import { getInstallationToken } from "@/lib/github/installationToken";
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
-  const rawBody = await request.text();
-  const signature = request.headers.get("x-hub-signature-256");
-  const event = request.headers.get("x-github-event");
+  try {
+    const rawBody = await request.text();
+    const signature = request.headers.get("x-hub-signature-256");
+    const event = request.headers.get("x-github-event");
 
-  // --- Signature verification ---
-  const secret = process.env.GITHUB_WEBHOOK_SECRET;
-  if (!secret) {
-    return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
-  }
+    // --- Signature verification ---
+    const secret = process.env.GITHUB_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error("GITHUB_WEBHOOK_SECRET is not set");
+      return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+    }
 
-  const expectedSignature =
-    "sha256=" +
-    crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+    const expectedSignature =
+      "sha256=" +
+      crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
 
-  if (
-    !signature ||
-    !crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature)
-    )
-  ) {
-    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
-  }
+    if (
+      !signature ||
+      !crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(expectedSignature)
+      )
+    ) {
+      console.error("Invalid signature", {
+        hasSignature: !!signature,
+        signatureLength: signature?.length,
+      });
+      return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+    }
 
-  const payload = JSON.parse(rawBody);
+    let payload: any;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch (err) {
+      console.error("Failed to parse JSON payload", err);
+      return NextResponse.json(
+        { error: "Invalid JSON payload", details: err instanceof Error ? err.message : String(err) },
+        { status: 400 }
+      );
+    }
 
   // --- Only handle issue comments ---
   if (event !== "issue_comment" || payload.action !== "created") {
@@ -37,13 +52,13 @@ export async function POST(request: NextRequest) {
   }
 
   // --- Require explicit invocation ---
-  const commentBody: string = payload.comment.body;
+  const commentBody: string = payload.comment?.body || "";
   if (!commentBody.includes("@codecloze review")) {
     return NextResponse.json({ ignored: true });
   }
 
   // --- Must be a PR ---
-  if (!payload.issue.pull_request) {
+  if (!payload.issue?.pull_request) {
     return NextResponse.json({ ignored: true });
   }
 
@@ -51,15 +66,33 @@ export async function POST(request: NextRequest) {
   console.log("Invocation detected", {
     event,
     action: payload.action,
-    comment: payload.comment.body,
-    isPR: Boolean(payload.issue.pull_request),
+    comment: payload.comment?.body,
+    isPR: Boolean(payload.issue?.pull_request),
   });
 
   // --- GitHub context ---
-  const installationId = payload.installation.id;
-  const owner = payload.repository.owner.login;
-  const repo = payload.repository.name;
-  const issueNumber = payload.issue.number;
+  const installationId = payload.installation?.id;
+  const owner = payload.repository?.owner?.login;
+  const repo = payload.repository?.name;
+  const issueNumber = payload.issue?.number;
+
+  // Validate required fields exist
+  if (!installationId || !owner || !repo || !issueNumber) {
+    console.error("Missing required payload fields", {
+      installationId,
+      owner,
+      repo,
+      issueNumber,
+      hasInstallation: !!payload.installation,
+      hasRepository: !!payload.repository,
+      hasRepositoryOwner: !!payload.repository?.owner,
+      hasIssue: !!payload.issue,
+    });
+    return NextResponse.json(
+      { error: "Invalid payload: missing required fields" },
+      { status: 400 }
+    );
+  }
 
   // --- Step 2: Log GitHub context ---
   console.log("GitHub context", {
@@ -91,7 +124,7 @@ export async function POST(request: NextRequest) {
   }
 
   console.log({
-    installationAccount: payload.installation.account.login,
+    installationAccount: payload.installation?.account?.login,
     repoOwner: owner,
   });
   
@@ -125,5 +158,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  return NextResponse.json({ posted: true });
+    return NextResponse.json({ posted: true });
+  } catch (err) {
+    // Catch any unhandled errors
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    console.error("Unhandled error in webhook handler", {
+      error: errorMessage,
+      stack: errorStack,
+    });
+    return NextResponse.json(
+      { error: "Internal server error", details: errorMessage },
+      { status: 500 }
+    );
+  }
 }
