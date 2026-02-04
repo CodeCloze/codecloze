@@ -127,3 +127,101 @@ export async function callLLM(
     throw err;
   }
 }
+
+/**
+ * Call Azure AI Foundry Responses API
+ * 
+ * Uses the Responses API endpoint (different from standard chat completions)
+ * 
+ * @param deploymentName - The deployment name
+ * @param prompt - The prompt to send
+ * @param maxTokens - Maximum tokens to generate (default: 800)
+ * @returns The completion text
+ */
+export async function callResponsesAPI(
+  deploymentName: string,
+  prompt: string,
+  maxTokens: number = 800
+): Promise<string> {
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  const apiKey = process.env.AZURE_OPENAI_API_KEY;
+
+  if (!endpoint || !apiKey) {
+    throw new Error("Azure OpenAI credentials not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY");
+  }
+
+  // Normalize endpoint: add https:// if missing, remove trailing slash
+  let cleanEndpoint = endpoint.trim();
+  if (!cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
+    cleanEndpoint = `https://${cleanEndpoint}`;
+  }
+  cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
+
+  // Azure AI Foundry Responses API uses a different endpoint structure
+  // Format: https://{endpoint}/openai/deployments/{deployment-name}/responses
+  // Or: https://{endpoint}/models/{deployment-name}/responses
+  // Check if endpoint is AI Foundry format (.services.ai.azure.com) or standard OpenAI format
+  const isAIFoundry = cleanEndpoint.includes(".services.ai.azure.com");
+  
+  let responsesURL: string;
+  if (isAIFoundry) {
+    // AI Foundry format: https://{resource}.services.ai.azure.com/models/{deployment}/responses
+    responsesURL = `${cleanEndpoint}/models/${deploymentName}/responses`;
+  } else {
+    // Standard Azure OpenAI format: https://{resource}.openai.azure.com/openai/deployments/{deployment}/responses
+    responsesURL = `${cleanEndpoint}/openai/deployments/${deploymentName}/responses`;
+  }
+
+  console.log("Calling Azure AI Foundry Responses API", {
+    deploymentName,
+    responsesURL,
+    hasApiKey: !!apiKey,
+  });
+
+  try {
+    const response = await fetch(responsesURL, {
+      method: "POST",
+      headers: {
+        "api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0,
+        max_tokens: maxTokens,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Responses API error: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    // Extract the completion text from responses API format
+    // The exact structure may vary, but typically it's in choices[0].message.content
+    if (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
+      return data.choices[0].message.content.trim();
+    }
+    
+    // Alternative structure check
+    if (data.content) {
+      return data.content.trim();
+    }
+
+    throw new Error("No completion text returned from Responses API");
+  } catch (err: any) {
+    console.error("Responses API error", {
+      deploymentName,
+      responsesURL,
+      error: err.message,
+    });
+    throw err;
+  }
+}
