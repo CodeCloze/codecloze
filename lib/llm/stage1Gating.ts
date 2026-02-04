@@ -1,4 +1,4 @@
-import { callLLM } from "./client";
+import { callLLM, ResponseFormatRequest } from "./client";
 
 /**
  * Stage 1: Gating Model
@@ -22,7 +22,7 @@ Ignore:
 - comments
 - style changes
 
-Respond with EXACT JSON and nothing else.
+Use the structured schema enforced by the Responses API to reply. Do not add extra text beyond the schema.
 
 If no meaningful risk exists:
 {"review": false}
@@ -34,6 +34,25 @@ Diff:
 ---
 {DIFF}
 ---`;
+
+const GATING_RESPONSE_FORMAT: ResponseFormatRequest = {
+  type: "json_schema",
+  json_schema: {
+    name: "gating_review",
+    description: "Indicates whether a full review is required based on the diff",
+    schema: {
+      type: "object",
+      properties: {
+        review: {
+          type: "boolean",
+          description: "True when a realistic bug risk warrants further review",
+        },
+      },
+      required: ["review"],
+    },
+    instructions: "Return exactly one JSON object matching this schema without additional commentary.",
+  },
+};
 
 interface GatingResponse {
   review: boolean;
@@ -60,7 +79,7 @@ export async function runGatingModel(diffText: string): Promise<boolean> {
     // Note: Reasoning models use reasoning tokens that count against max_completion_tokens
     // We need higher limits to account for reasoning + completion tokens
     // Using 1000 tokens to ensure we get completion text even with reasoning
-    const response = await callLLM(deploymentName, prompt, 2000);
+    const response = await callLLM(deploymentName, prompt, 2000, GATING_RESPONSE_FORMAT);
 
     // Parse JSON response strictly
     let parsed: GatingResponse;
