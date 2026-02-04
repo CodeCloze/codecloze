@@ -8,11 +8,13 @@ import OpenAI from "openai";
  * - AZURE_OPENAI_API_KEY: The API key for authentication
  */
 
-let client: OpenAI | null = null;
+// Cache clients per deployment name since each deployment needs its own baseURL
+const clientCache: Map<string, OpenAI> = new Map();
 
-function getClient(): OpenAI {
-  if (client) {
-    return client;
+function getClient(deploymentName: string): OpenAI {
+  // Return cached client if available
+  if (clientCache.has(deploymentName)) {
+    return clientCache.get(deploymentName)!;
   }
 
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -22,16 +24,27 @@ function getClient(): OpenAI {
     throw new Error("Azure OpenAI credentials not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY");
   }
 
+  // Normalize endpoint: add https:// if missing, remove trailing slash
+  let cleanEndpoint = endpoint.trim();
+  if (!cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
+    cleanEndpoint = `https://${cleanEndpoint}`;
+  }
+  cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
+
   // Configure OpenAI client for Azure OpenAI
-  // Azure OpenAI uses a different base URL structure
-  client = new OpenAI({
+  // Azure OpenAI requires the deployment name in the base URL path
+  // Format: https://{endpoint}/openai/deployments/{deployment-name}
+  const client = new OpenAI({
     apiKey: apiKey,
-    baseURL: `${endpoint}/openai/deployments`,
+    baseURL: `${cleanEndpoint}/openai/deployments/${deploymentName}`,
     defaultQuery: { "api-version": "2024-02-15-preview" },
     defaultHeaders: {
       "api-key": apiKey,
     },
   });
+
+  // Cache the client for this deployment
+  clientCache.set(deploymentName, client);
 
   return client;
 }
@@ -51,28 +64,66 @@ export async function callLLM(
   prompt: string,
   maxTokens: number = 300
 ): Promise<string> {
-  const openaiClient = getClient();
+  const openaiClient = getClient(deploymentName);
 
-  // Use chat completions API (standard for Azure OpenAI)
-  // For Azure OpenAI, use the deployment name as the model parameter
-  const response = await openaiClient.chat.completions.create({
-    model: deploymentName, // Azure OpenAI uses deployment name as model
-    messages: [
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-    temperature: 0, // Deterministic
-    max_tokens: maxTokens,
-    // No streaming, no retries - single deterministic call
+  // Log the configuration for debugging (without exposing the API key)
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  let cleanEndpoint = endpoint?.trim() || "";
+  if (cleanEndpoint && !cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
+    cleanEndpoint = `https://${cleanEndpoint}`;
+  }
+  cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
+  
+  console.log("Calling Azure OpenAI", {
+    deploymentName,
+    baseURL: `${cleanEndpoint}/openai/deployments/${deploymentName}`,
+    hasApiKey: !!process.env.AZURE_OPENAI_API_KEY,
   });
 
-  // Extract the completion text from chat response
-  const choice = response.choices[0];
-  if (!choice || !choice.message || !choice.message.content) {
-    throw new Error("No completion text returned from LLM");
-  }
+  try {
+    // Use chat completions API (standard for Azure OpenAI)
+    // For Azure OpenAI, the model parameter can be the deployment name or any string
+    // The actual deployment is determined by the baseURL path
+    const response = await openaiClient.chat.completions.create({
+      model: deploymentName, // Can be deployment name or any string for Azure
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0, // Deterministic
+      max_tokens: maxTokens,
+      // No streaming, no retries - single deterministic call
+    });
 
-  return choice.message.content.trim();
+    // Extract the completion text from chat response
+    const choice = response.choices[0];
+    if (!choice || !choice.message || !choice.message.content) {
+      throw new Error("No completion text returned from LLM");
+    }
+
+    return choice.message.content.trim();
+  } catch (err: any) {
+    // Enhanced error logging for Azure OpenAI issues
+    if (err?.code === "DeploymentNotFound" || err?.status === 404) {
+      const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+      let cleanEndpoint = endpoint?.trim() || "";
+      if (cleanEndpoint && !cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
+        cleanEndpoint = `https://${cleanEndpoint}`;
+      }
+      cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
+      
+      console.error("Azure OpenAI deployment not found", {
+        deploymentName,
+        endpoint: cleanEndpoint,
+        fullURL: `${cleanEndpoint}/openai/deployments/${deploymentName}/chat/completions`,
+        error: err.message,
+      });
+      throw new Error(
+        `Azure OpenAI deployment "${deploymentName}" not found. Check that the deployment exists and AZURE_OPENAI_ENDPOINT is correct.`
+      );
+    }
+    throw err;
+  }
 }
