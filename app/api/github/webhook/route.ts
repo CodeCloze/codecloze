@@ -75,8 +75,19 @@ export async function POST(request: NextRequest) {
     token = await getInstallationToken(installationId);
     console.log("Installation token acquired");
   } catch (err) {
-    console.error("Failed to get installation token", err);
-    return NextResponse.json({ error: "auth failed" }, { status: 500 });
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    console.error("Failed to get installation token", {
+      error: errorMessage,
+      stack: errorStack,
+      installationId,
+      hasAppId: !!process.env.GITHUB_APP_ID,
+      hasPrivateKey: !!process.env.GITHUB_PRIVATE_KEY_BASE64,
+    });
+    return NextResponse.json(
+      { error: "auth failed", details: errorMessage },
+      { status: 500 }
+    );
   }
 
   console.log({
