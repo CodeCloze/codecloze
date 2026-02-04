@@ -1,4 +1,4 @@
-import { callLLM } from "./client";
+import { callResponsesAPI } from "./client";
 
 /**
  * Stage 2: Main Review Model
@@ -70,8 +70,8 @@ export async function runReviewModel(diffText: string): Promise<ReviewResponse> 
   const prompt = REVIEW_PROMPT.replace("{DIFF}", diffText);
 
   try {
-    // Call LLM with moderate token limit for review (≤800 tokens)
-    const response = await callLLM(deploymentName, prompt, 800);
+    // Call Responses API with moderate token limit for review (≤800 tokens)
+    const response = await callResponsesAPI(deploymentName, prompt, 800);
 
     // Parse JSON response
     let parsed: ReviewResponse;
