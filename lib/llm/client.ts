@@ -56,7 +56,7 @@ export async function callLLM(
       body: JSON.stringify({
         model: deploymentName, // Deployment name
         input: prompt, // Use input parameter for Responses API
-        max_completion_tokens: maxTokens // Use max_completion_tokens for Azure AI Foundry models
+        max_output_tokens: maxTokens // Use max_completion_tokens for Azure AI Foundry models
       }),
     });
 
