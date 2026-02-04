@@ -1,48 +1,12 @@
-import OpenAI from "openai";
-
 /**
  * Azure AI Foundry / OpenAI Client Configuration
+ * 
+ * Uses REST API directly instead of SDK to avoid TypeScript type issues
  * 
  * Uses environment variables for configuration:
  * - AZURE_OPENAI_ENDPOINT: The Azure OpenAI endpoint URL (e.g., https://your-resource.openai.azure.com)
  * - AZURE_OPENAI_API_KEY: The API key for authentication
  */
-
-// Cache the OpenAI client (shared across all deployments)
-let cachedClient: OpenAI | null = null;
-
-function getClient(): OpenAI {
-  // Return cached client if available
-  if (cachedClient) {
-    return cachedClient;
-  }
-
-  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  const apiKey = process.env.AZURE_OPENAI_API_KEY;
-
-  if (!endpoint || !apiKey) {
-    throw new Error("Azure OpenAI credentials not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY");
-  }
-
-  // Normalize endpoint: add https:// if missing, remove trailing slash
-  let cleanEndpoint = endpoint.trim();
-  if (!cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
-    cleanEndpoint = `https://${cleanEndpoint}`;
-  }
-  cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
-
-  // Configure OpenAI client for Azure OpenAI Responses API
-  // Format: https://{resource}.openai.azure.com/openai/v1/
-  const client = new OpenAI({
-    apiKey: apiKey,
-    baseURL: `${cleanEndpoint}/openai/v1/`,
-  });
-
-  // Cache the client
-  cachedClient = client;
-
-  return client;
-}
 
 /**
  * Call Azure OpenAI with deterministic settings
@@ -59,62 +23,81 @@ export async function callLLM(
   prompt: string,
   maxTokens: number = 300
 ): Promise<string> {
-  const openaiClient = getClient();
-
-  // Log the configuration for debugging (without exposing the API key)
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  let cleanEndpoint = endpoint?.trim() || "";
-  if (cleanEndpoint && !cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
+  const apiKey = process.env.AZURE_OPENAI_API_KEY;
+
+  if (!endpoint || !apiKey) {
+    throw new Error("Azure OpenAI credentials not configured. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY");
+  }
+
+  // Normalize endpoint: add https:// if missing, remove trailing slash
+  let cleanEndpoint = endpoint.trim();
+  if (!cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
     cleanEndpoint = `https://${cleanEndpoint}`;
   }
   cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
-  
-  console.log("Calling Azure OpenAI Responses API", {
+
+  // Use REST API directly: https://{resource}.openai.azure.com/openai/v1/responses
+  const responsesURL = `${cleanEndpoint}/openai/v1/responses`;
+
+  console.log("Calling Azure OpenAI Responses API (REST)", {
     deploymentName,
-    baseURL: `${cleanEndpoint}/openai/v1/`,
-    hasApiKey: !!process.env.AZURE_OPENAI_API_KEY,
+    url: responsesURL,
+    hasApiKey: !!apiKey,
   });
 
   try {
-    // Use Responses API
-    const response = await openaiClient.responses.create({
-      model: deploymentName, // Deployment name
-      input: prompt, // Use input parameter for Responses API
-      max_completion_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
-      temperature: 0, // Deterministic
+    const response = await fetch(responsesURL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey, // Use api-key header for Azure OpenAI
+      },
+      body: JSON.stringify({
+        model: deploymentName, // Deployment name
+        input: prompt, // Use input parameter for Responses API
+        max_completion_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
+        temperature: 0, // Deterministic
+      }),
     });
 
-    // Extract the completion text from responses API format
-    // The response structure may vary, check common fields
-    if (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) {
-      return response.choices[0].message.content.trim();
-    }
-    
-    if (response.content) {
-      return response.content.trim();
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Azure OpenAI API error", {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorText,
+      });
+      throw new Error(`Azure OpenAI API error: ${response.status} ${errorText}`);
     }
 
-    // Try to get text from response object directly
-    const responseText = (response as any).text || (response as any).output;
-    if (responseText) {
-      return String(responseText).trim();
+    const data = await response.json();
+
+    // Extract the completion text from responses API format
+    // According to docs, the response has an `output_text` field
+    if (data.output_text) {
+      return data.output_text.trim();
+    }
+
+    // Fallback: check output array structure
+    if (data.output && Array.isArray(data.output) && data.output.length > 0) {
+      const firstOutput = data.output[0];
+      if (firstOutput.content && Array.isArray(firstOutput.content)) {
+        const textContent = firstOutput.content.find((c: any) => c.type === "output_text");
+        if (textContent && textContent.text) {
+          return textContent.text.trim();
+        }
+      }
     }
 
     throw new Error("No completion text returned from Responses API");
   } catch (err: any) {
     // Enhanced error logging for Azure OpenAI issues
-    if (err?.code === "DeploymentNotFound" || err?.status === 404) {
-      const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-      let cleanEndpoint = endpoint?.trim() || "";
-      if (cleanEndpoint && !cleanEndpoint.startsWith("http://") && !cleanEndpoint.startsWith("https://")) {
-        cleanEndpoint = `https://${cleanEndpoint}`;
-      }
-      cleanEndpoint = cleanEndpoint.replace(/\/$/, "");
-      
+    if (err?.status === 404 || err.message?.includes("404")) {
       console.error("Azure OpenAI deployment not found", {
         deploymentName,
         endpoint: cleanEndpoint,
-        fullURL: `${cleanEndpoint}/openai/v1/responses`,
+        fullURL: responsesURL,
         error: err.message,
       });
       throw new Error(
