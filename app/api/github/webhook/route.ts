@@ -1,54 +1,76 @@
-import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
+import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
+import { getInstallationToken } from "@/lib/github/installationToken";
+
+export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
-  try {
-    // Get the raw body for signature verification
-    const body = await request.text();
-    
-    // Get the signature from headers
-    const signature = request.headers.get('X-Hub-Signature-256');
-    const eventType = request.headers.get('X-GitHub-Event');
-    
-    // Log the event type
-    console.log('GitHub Webhook Event Type:', eventType);
-    
-    // Verify signature if secret is configured
-    const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
-    if (webhookSecret) {
-      if (!signature) {
-        return NextResponse.json(
-          { error: 'Missing signature' },
-          { status: 401 }
-        );
-      }
-      
-      // GitHub sends signature as "sha256=<hash>"
-      const expectedSignature = `sha256=${crypto
-        .createHmac('sha256', webhookSecret)
-        .update(body)
-        .digest('hex')}`;
-      
-      // Use timing-safe comparison to prevent timing attacks
-      if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
-        return NextResponse.json(
-          { error: 'Invalid signature' },
-          { status: 401 }
-        );
-      }
-      
-      console.log('Signature verified successfully');
-    } else {
-      console.warn('GITHUB_WEBHOOK_SECRET not set - skipping signature verification');
-    }
-    
-    // Return 200 OK
-    return NextResponse.json({ received: true }, { status: 200 });
-  } catch (error) {
-    console.error('Error processing webhook:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+  const rawBody = await request.text();
+  const signature = request.headers.get("x-hub-signature-256");
+  const event = request.headers.get("x-github-event");
+
+  // --- Signature verification ---
+  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  if (!secret) {
+    return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
   }
+
+  const expectedSignature =
+    "sha256=" +
+    crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+
+  if (
+    !signature ||
+    !crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expectedSignature)
+    )
+  ) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+  }
+
+  const payload = JSON.parse(rawBody);
+
+  // --- Only handle issue comments ---
+  if (event !== "issue_comment" || payload.action !== "created") {
+    return NextResponse.json({ ignored: true });
+  }
+
+  // --- Require explicit invocation ---
+  const commentBody: string = payload.comment.body;
+  if (!commentBody.includes("@codecloze review")) {
+    return NextResponse.json({ ignored: true });
+  }
+
+  // --- Must be a PR ---
+  if (!payload.issue.pull_request) {
+    return NextResponse.json({ ignored: true });
+  }
+
+  // --- GitHub context ---
+  const installationId = payload.installation.id;
+  const owner = payload.repository.owner.login;
+  const repo = payload.repository.name;
+  const issueNumber = payload.issue.number;
+
+  // --- Auth as the app ---
+  const token = await getInstallationToken(installationId);
+
+  // --- Post test comment ---
+  await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "CodeCloze",
+      },
+      body: JSON.stringify({
+        body: "👋 CodeCloze is connected and ready. Review logic coming next.",
+      }),
+    }
+  );
+
+  return NextResponse.json({ posted: true });
 }
