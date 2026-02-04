@@ -15,7 +15,6 @@ import { getInstallationToken } from "@/lib/github/installationToken";
  * 4. Authenticate as GitHub App and get installation token
  * 5. Fetch the PR diff and calculate basic statistics
  */
- */
 
 export const runtime = "nodejs";
 
