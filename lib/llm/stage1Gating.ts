@@ -1,4 +1,4 @@
-import { callLLM, ResponseFormatRequest } from "./client";
+import { callLLM, TextFormatRequest } from "./client";
 
 /**
  * Stage 1: Gating Model
@@ -35,22 +35,20 @@ Diff:
 {DIFF}
 ---`;
 
-const GATING_RESPONSE_FORMAT: ResponseFormatRequest = {
+const GATING_RESPONSE_FORMAT: TextFormatRequest = {
   type: "json_schema",
+  name: "gating_review",
+  description: "Indicates whether a full review is required based on the diff",
+  instructions: "Return exactly one JSON object matching this schema without additional commentary.",
   json_schema: {
-    name: "gating_review",
-    description: "Indicates whether a full review is required based on the diff",
-    schema: {
-      type: "object",
-      properties: {
-        review: {
-          type: "boolean",
-          description: "True when a realistic bug risk warrants further review",
-        },
+    type: "object",
+    properties: {
+      review: {
+        type: "boolean",
+        description: "True when a realistic bug risk warrants further review",
       },
-      required: ["review"],
     },
-    instructions: "Return exactly one JSON object matching this schema without additional commentary.",
+    required: ["review"],
   },
 };
 
