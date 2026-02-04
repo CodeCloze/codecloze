@@ -74,7 +74,7 @@ export async function runReviewModel(diffText: string): Promise<ReviewResponse> 
     // Note: Reasoning models use reasoning tokens that count against max_completion_tokens
     // We need higher limits to account for reasoning + completion tokens
     // Using 2000 tokens to ensure we get completion text even with reasoning
-    const response = await callResponsesAPI(deploymentName, prompt, 2000);
+    const response = await callResponsesAPI(deploymentName, prompt, 4000);
 
     // Parse JSON response
     let parsed: ReviewResponse;

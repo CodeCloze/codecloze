@@ -44,7 +44,7 @@ export async function callLLM(
     model: deploymentName, // Deployment name
     input: prompt, // Use input parameter for Responses API
     max_output_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
-    reasoning: {"effort": "low"}
+    reasoning: {"effort": "low"} // Use low reasoning effort to align with multiple models reasoning effort enums
   };
 
   console.log("=== Azure OpenAI Responses API Request ===", {
