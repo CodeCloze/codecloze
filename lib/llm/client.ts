@@ -8,24 +8,17 @@
  * - AZURE_OPENAI_API_KEY: The API key for authentication
  */
 
-export type JsonSchemaPrimitiveType = "string" | "number" | "boolean" | "object" | "array";
-
-export interface JsonSchemaDefinition {
-  type: JsonSchemaPrimitiveType;
-  description?: string;
-  properties?: Record<string, JsonSchemaDefinition>;
-  required?: string[];
-  items?: JsonSchemaDefinition;
-  minimum?: number;
-  maximum?: number;
-}
-
-export interface TextFormatRequest {
+export interface TextFormatJsonSchema {
   type: "json_schema";
-  name?: string;
-  description?: string;
-  instructions?: string;
-  json_schema: JsonSchemaDefinition;
+  name: string;
+  strict: boolean;
+  schema: {
+    type: string;
+    properties?: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+    [key: string]: unknown;
+  };
 }
 
 export interface ResponsesApiInputMessage {
@@ -76,9 +69,9 @@ interface ResponsesApiResponse {
  */
 export async function callLLM(
   deploymentName: string,
-  input: string | ResponsesApiInputMessage[],
+  input: ResponsesApiInputMessage[],
   maxTokens: number = 300,
-  textFormat?: TextFormatRequest
+  textFormat?: TextFormatJsonSchema
 ): Promise<string> {
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
@@ -97,43 +90,39 @@ export async function callLLM(
   // Use REST API directly: https://{resource}.openai.azure.com/openai/v1/responses
   const responsesURL = `${cleanEndpoint}/openai/v1/responses`;
 
-  const normalizedInput: ResponsesApiInputMessage[] =
-    typeof input === "string"
-      ? [{ role: "user", content: input }]
-      : input;
-
   const requestBody: {
     model: string;
     input: ResponsesApiInputMessage[];
     max_output_tokens: number;
     reasoning: { effort: "low" | "medium" | "high" };
-    text?: { format: TextFormatRequest };
+    text?: { format: TextFormatJsonSchema };
   } = {
-    model: deploymentName, // Deployment name
-    input: normalizedInput,
-    max_output_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
-    reasoning: { effort: "low" } // Use low reasoning effort to align with multiple models reasoning effort enums
+    model: deploymentName,
+    input,
+    max_output_tokens: maxTokens,
+    reasoning: { effort: "low" }
   };
   if (textFormat) {
     requestBody.text = { format: textFormat };
   }
 
-    console.log("=== Azure OpenAI Responses API Request ===", {
-      deploymentName,
-      url: responsesURL,
-      endpoint: cleanEndpoint,
-      hasApiKey: !!apiKey,
-      apiKeyLength: apiKey?.length || 0,
-      requestBody: {
-        ...requestBody,
-        input: normalizedInput.map((msg) => ({
-          ...msg,
-          content:
-            msg.content.length > 200 ? `${msg.content.substring(0, 200)}...` : msg.content,
-        })),
-      },
-      maxTokens,
-    });
+  console.log("=== Azure OpenAI Responses API Request ===", {
+    deploymentName,
+    url: responsesURL,
+    endpoint: cleanEndpoint,
+    hasApiKey: !!apiKey,
+    apiKeyLength: apiKey?.length || 0,
+    requestBody: {
+      ...requestBody,
+      input: input.map((msg) => ({
+        ...msg,
+        content:
+          msg.content.length > 200 ? `${msg.content.substring(0, 200)}...` : msg.content,
+      })),
+      text: requestBody.text ? JSON.stringify(requestBody.text, null, 2) : undefined,
+    },
+    maxTokens,
+  });
 
   try {
     const response = await fetch(responsesURL, {
@@ -320,17 +309,16 @@ export async function callLLM(
  * Uses the Responses API endpoint (same as callLLM, but kept for backward compatibility)
  * 
  * @param deploymentName - The deployment name
- * @param input - The prompt string or message array to send
+ * @param input - The message array to send
  * @param maxTokens - Maximum tokens to generate (default: 800)
  * @param textFormat - Optional structured output specification for `text.format`
  * @returns The completion text
  */
 export async function callResponsesAPI(
   deploymentName: string,
-  input: string | ResponsesApiInputMessage[],
+  input: ResponsesApiInputMessage[],
   maxTokens: number = 800,
-  textFormat?: TextFormatRequest
+  textFormat?: TextFormatJsonSchema
 ): Promise<string> {
-  // Use the same implementation as callLLM since both use Responses API now
   return callLLM(deploymentName, input, maxTokens, textFormat);
 }
