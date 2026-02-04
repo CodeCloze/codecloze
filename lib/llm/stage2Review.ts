@@ -1,4 +1,4 @@
-import { callResponsesAPI, ResponseFormatRequest } from "./client";
+import { callResponsesAPI, TextFormatRequest } from "./client";
 
 /**
  * Stage 2: Main Review Model
@@ -44,46 +44,44 @@ Diff:
 {DIFF}
 ---`;
 
-const REVIEW_RESPONSE_FORMAT: ResponseFormatRequest = {
+const REVIEW_RESPONSE_FORMAT: TextFormatRequest = {
   type: "json_schema",
+  name: "review_findings",
+  description: "Structured findings describing realistic bug risks from the diff",
+  instructions: "Return exactly one JSON object matching this schema without extra commentary.",
   json_schema: {
-    name: "review_findings",
-    description: "Structured findings describing realistic bug risks from the diff",
-    schema: {
-      type: "object",
-      properties: {
-        findings: {
-          type: "array",
-          description: "List of plausible bug risks grounded in the diff",
-          items: {
-            type: "object",
-            properties: {
-              summary: {
-                type: "string",
-                description: "Short description of the issue",
-              },
-              lines: {
-                type: "string",
-                description: "Diff context or hunk associated with the risk",
-              },
-              failure_mode: {
-                type: "string",
-                description: "How the issue could fail at runtime",
-              },
-              confidence: {
-                type: "number",
-                description: "Confidence between 0 and 1",
-                minimum: 0,
-                maximum: 1,
-              },
+    type: "object",
+    properties: {
+      findings: {
+        type: "array",
+        description: "List of plausible bug risks grounded in the diff",
+        items: {
+          type: "object",
+          properties: {
+            summary: {
+              type: "string",
+              description: "Short description of the issue",
             },
-            required: ["summary", "lines", "failure_mode", "confidence"],
+            lines: {
+              type: "string",
+              description: "Diff context or hunk associated with the risk",
+            },
+            failure_mode: {
+              type: "string",
+              description: "How the issue could fail at runtime",
+            },
+            confidence: {
+              type: "number",
+              description: "Confidence between 0 and 1",
+              minimum: 0,
+              maximum: 1,
+            },
           },
+          required: ["summary", "lines", "failure_mode", "confidence"],
         },
       },
-      required: ["findings"],
     },
-    instructions: "Return exactly one JSON object matching this schema without extra commentary.",
+    required: ["findings"],
   },
 };
 

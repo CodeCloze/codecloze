@@ -20,14 +20,47 @@ export interface JsonSchemaDefinition {
   maximum?: number;
 }
 
-export interface ResponseFormatRequest {
+export interface TextFormatRequest {
   type: "json_schema";
-  json_schema: {
-    name: string;
-    description?: string;
-    schema: JsonSchemaDefinition;
-    instructions?: string;
+  name?: string;
+  description?: string;
+  instructions?: string;
+  json_schema: JsonSchemaDefinition;
+}
+
+export interface ResponsesApiInputMessage {
+  role: string;
+  content: string;
+}
+
+interface ResponsesApiContentItem {
+  type?: string;
+  text?: string;
+}
+
+interface ResponsesApiOutputItem {
+  type?: string;
+  role?: string;
+  content?: ResponsesApiContentItem[];
+}
+
+interface ResponsesApiResponse {
+  id?: string;
+  model?: string;
+  status?: string;
+  error?: unknown;
+  incomplete_details?: { reason?: string };
+  output_text?: string;
+  text?: string;
+  output?: ResponsesApiOutputItem[];
+  usage?: {
+    output_tokens?: number;
+    output_tokens_details?: {
+      reasoning_tokens?: number;
+    };
   };
+  max_output_tokens?: number;
+  temperature?: number;
 }
 
 /**
@@ -36,16 +69,16 @@ export interface ResponseFormatRequest {
  * Uses chat completions API (standard for Azure OpenAI)
  * 
  * @param deploymentName - The deployment name (from environment or parameter)
- * @param prompt - The prompt to send
+ * @param input - The prompt string or array of messages
  * @param maxTokens - Maximum tokens to generate (default: 300)
- * @param responseFormat - Optional structured output specification
+ * @param textFormat - Optional structured output specification for `text.format`
  * @returns The completion text
  */
 export async function callLLM(
   deploymentName: string,
-  prompt: string,
+  input: string | ResponsesApiInputMessage[],
   maxTokens: number = 300,
-  responseFormat?: ResponseFormatRequest
+  textFormat?: TextFormatRequest
 ): Promise<string> {
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
@@ -64,35 +97,43 @@ export async function callLLM(
   // Use REST API directly: https://{resource}.openai.azure.com/openai/v1/responses
   const responsesURL = `${cleanEndpoint}/openai/v1/responses`;
 
+  const normalizedInput: ResponsesApiInputMessage[] =
+    typeof input === "string"
+      ? [{ role: "user", content: input }]
+      : input;
+
   const requestBody: {
     model: string;
-    input: string;
+    input: ResponsesApiInputMessage[];
     max_output_tokens: number;
     reasoning: { effort: "low" | "medium" | "high" };
-    response_format?: ResponseFormatRequest;
+    text?: { format: TextFormatRequest };
   } = {
     model: deploymentName, // Deployment name
-    input: prompt, // Use input parameter for Responses API
+    input: normalizedInput,
     max_output_tokens: maxTokens, // Use max_completion_tokens for Azure AI Foundry models
     reasoning: { effort: "low" } // Use low reasoning effort to align with multiple models reasoning effort enums
   };
-  if (responseFormat) {
-    requestBody.response_format = responseFormat;
+  if (textFormat) {
+    requestBody.text = { format: textFormat };
   }
 
     console.log("=== Azure OpenAI Responses API Request ===", {
-    deploymentName,
-    url: responsesURL,
-    endpoint: cleanEndpoint,
-    hasApiKey: !!apiKey,
-    apiKeyLength: apiKey?.length || 0,
-    requestBody: {
-      ...requestBody,
-      input: requestBody.input.substring(0, 200) + (requestBody.input.length > 200 ? "..." : ""), // Log first 200 chars of input
-      inputLength: requestBody.input.length,
-    },
-    maxTokens,
-  });
+      deploymentName,
+      url: responsesURL,
+      endpoint: cleanEndpoint,
+      hasApiKey: !!apiKey,
+      apiKeyLength: apiKey?.length || 0,
+      requestBody: {
+        ...requestBody,
+        input: normalizedInput.map((msg) => ({
+          ...msg,
+          content:
+            msg.content.length > 200 ? `${msg.content.substring(0, 200)}...` : msg.content,
+        })),
+      },
+      maxTokens,
+    });
 
   try {
     const response = await fetch(responsesURL, {
@@ -125,7 +166,7 @@ export async function callLLM(
       throw new Error(`Azure OpenAI API error: ${response.status} ${responseText}`);
     }
 
-    let data: any;
+    let data: ResponsesApiResponse;
     try {
       data = JSON.parse(responseText);
     } catch (parseErr) {
@@ -156,7 +197,7 @@ export async function callLLM(
         firstItemType: data.output[0]?.type,
         firstItemRole: data.output[0]?.role,
         firstItemContentLength: data.output[0]?.content?.length,
-        allTypes: data.output.map((o: any) => o.type),
+        allTypes: data.output.map((o) => o.type),
       } : null,
     });
 
@@ -192,17 +233,17 @@ export async function callLLM(
     }
 
     // Fallback: check output array structure for message items
-    if (data.output && Array.isArray(data.output) && data.output.length > 0) {
+    if (Array.isArray(data.output) && data.output.length > 0) {
       console.log("=== Attempting to extract from output array ===", {
         outputLength: data.output.length,
-        allTypes: data.output.map((o: any) => o.type),
+      allTypes: data.output.map((o) => o.type),
         firstOutput: JSON.stringify(data.output[0], null, 2).substring(0, 500),
       });
       
       // Look for message type items (not reasoning items)
       for (const outputItem of data.output) {
-        if (outputItem.type === "message" && outputItem.content && Array.isArray(outputItem.content)) {
-          const textContent = outputItem.content.find((c: any) => c.type === "output_text");
+        if (outputItem.type === "message" && Array.isArray(outputItem.content)) {
+          const textContent = outputItem.content.find((c) => c.type === "output_text");
           if (textContent && textContent.text) {
             console.log("=== Extracted text from message in output array ===", {
               length: textContent.text.length,
@@ -214,7 +255,7 @@ export async function callLLM(
       }
 
       // If we only have reasoning items and response is incomplete, that's the issue
-      const hasOnlyReasoning = data.output.every((o: any) => o.type === "reasoning");
+      const hasOnlyReasoning = data.output.every((o) => o.type === "reasoning");
       if (hasOnlyReasoning && data.status === "incomplete") {
         console.error("=== Response incomplete: Only reasoning tokens, no completion text ===", {
           reasoningTokens: data.usage?.output_tokens_details?.reasoning_tokens || 0,
@@ -235,29 +276,35 @@ export async function callLLM(
       responseKeys: Object.keys(data),
       output_text: data.output_text,
       text: data.text,
-      outputTypes: data.output?.map((o: any) => o.type),
+      outputTypes: data.output?.map((o) => o.type),
       fullResponse: JSON.stringify(data, null, 2).substring(0, 2000), // Log first 2000 chars of full response
     });
     throw new Error("No completion text returned from Responses API");
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const typedErr =
+      typeof err === "object" && err !== null
+        ? (err as { status?: number; code?: string; message?: string; stack?: string })
+        : undefined;
     console.error("=== Azure OpenAI API Exception ===", {
-      errorType: err?.constructor?.name,
-      errorMessage: err?.message,
-      errorStack: err?.stack,
-      status: err?.status,
-      code: err?.code,
+      errorType: err instanceof Error ? err.constructor?.name : undefined,
+      errorMessage: typedErr?.message,
+      errorStack: err instanceof Error ? err.stack : undefined,
+      status: typedErr?.status,
+      code: typedErr?.code,
       deploymentName,
       endpoint: cleanEndpoint,
       fullURL: responsesURL,
     });
 
     // Enhanced error logging for Azure OpenAI issues
-    if (err?.status === 404 || err.message?.includes("404")) {
+    const has404Message =
+      typeof typedErr?.message === "string" ? typedErr.message.includes("404") : false;
+    if (typedErr?.status === 404 || has404Message) {
       console.error("=== 404 Error Details ===", {
         deploymentName,
         endpoint: cleanEndpoint,
         fullURL: responsesURL,
-        error: err.message,
+        error: typedErr?.message,
       });
       throw new Error(
         `Azure OpenAI deployment "${deploymentName}" not found. Check that the deployment exists and AZURE_OPENAI_ENDPOINT is correct.`
@@ -273,17 +320,17 @@ export async function callLLM(
  * Uses the Responses API endpoint (same as callLLM, but kept for backward compatibility)
  * 
  * @param deploymentName - The deployment name
- * @param prompt - The prompt/input to send
+ * @param input - The prompt string or message array to send
  * @param maxTokens - Maximum tokens to generate (default: 800)
- * @param responseFormat - Optional structured output specification
+ * @param textFormat - Optional structured output specification for `text.format`
  * @returns The completion text
  */
 export async function callResponsesAPI(
   deploymentName: string,
-  prompt: string,
+  input: string | ResponsesApiInputMessage[],
   maxTokens: number = 800,
-  responseFormat?: ResponseFormatRequest
+  textFormat?: TextFormatRequest
 ): Promise<string> {
   // Use the same implementation as callLLM since both use Responses API now
-  return callLLM(deploymentName, prompt, maxTokens, responseFormat);
+  return callLLM(deploymentName, input, maxTokens, textFormat);
 }

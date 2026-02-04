@@ -37,4 +37,4 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## Structured Output
 
-LLM-driven workflows in `lib/llm` now send the `response_format` payload described in the [Responses API reference](https://platform.openai.com/docs/api-reference/responses/create) so models return predictable JSON. The schema definitions mirror the patterns in the [Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs), which makes it easier to parse gating decisions and findings.
+LLM-driven workflows in `lib/llm` now send the `text.format` payload described in the [Responses API reference](https://platform.openai.com/docs/api-reference/responses/create) so models return predictable JSON, following the structured example that pairs `input` message arrays with a `json_schema` formatter. The schema definitions mirror the patterns in the [Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs), which makes it easier to parse gating decisions and findings.
